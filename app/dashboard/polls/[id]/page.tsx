@@ -1,20 +1,21 @@
 import { redirect, notFound } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import PollReportHub from '@/components/polls/report-hub'
-import type { PollQuestion } from '@/lib/supabase/types'
+import type { Poll, PollQuestion, AiAnalysis } from '@/lib/supabase/types'
 
 export default async function PollReportPage({ params }: { params: { id: string } }) {
   const supabase = createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/auth/login')
 
-  const { data: poll } = await supabase
+  const { data: pollData } = await supabase
     .from('polls')
     .select('*')
     .eq('id', params.id)
     .single()
 
-  if (!poll) notFound()
+  if (!pollData) notFound()
+  const poll = pollData as unknown as Poll
 
   // Auth check via campaign membership
   const { data: member } = await supabase
@@ -37,7 +38,7 @@ export default async function PollReportPage({ params }: { params: { id: string 
     .select('id, phone, district, zip, city, name')
     .eq('campaign_id', poll.campaign_id)
 
-  const { data: aiAnalysis } = await supabase
+  const { data: aiAnalysisData } = await supabase
     .from('ai_analysis')
     .select('*')
     .eq('poll_id', poll.id)
@@ -51,7 +52,7 @@ export default async function PollReportPage({ params }: { params: { id: string 
       questions={poll.questions as PollQuestion[]}
       responses={responses ?? []}
       contactMap={contactMap}
-      aiAnalysis={aiAnalysis}
+      aiAnalysis={aiAnalysisData as unknown as AiAnalysis | null}
     />
   )
 }

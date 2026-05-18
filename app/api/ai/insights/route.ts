@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@/lib/supabase/server'
-import type { PollQuestion } from '@/lib/supabase/types'
+import type { Poll, PollQuestion } from '@/lib/supabase/types'
+
+interface ResponseRow { contact_id: string; question_id: string; answer: string }
+interface ContactRow { id: string; district: string | null; zip: string | null }
+interface AiRow { correlations: unknown }
 
 export async function POST(req: NextRequest) {
   const supabase = createClient()
@@ -11,50 +15,54 @@ export async function POST(req: NextRequest) {
   const { poll_id } = await req.json()
   if (!poll_id) return NextResponse.json({ error: 'poll_id required' }, { status: 400 })
 
-  const { data: poll } = await supabase.from('polls').select('*').eq('id', poll_id).single()
-  if (!poll) return NextResponse.json({ error: 'Poll not found' }, { status: 404 })
+  const { data: pollData } = await supabase.from('polls').select('*').eq('id', poll_id).single()
+  if (!pollData) return NextResponse.json({ error: 'Poll not found' }, { status: 404 })
+  const poll = pollData as unknown as Poll
 
-  const { data: member } = await supabase
+  const { data: memberData } = await supabase
     .from('campaign_members')
     .select('role')
     .eq('campaign_id', poll.campaign_id)
     .eq('user_id', user.id)
     .single()
-  if (!member) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+  if (!memberData) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
-  const { data: existingAnalysis } = await supabase
+  const { data: existingData } = await supabase
     .from('ai_analysis')
     .select('correlations')
     .eq('poll_id', poll_id)
     .single()
+  const existingAnalysis = existingData as unknown as AiRow | null
 
-  const { data: responses } = await supabase
+  const { data: responsesData } = await supabase
     .from('responses')
     .select('contact_id, question_id, answer')
     .eq('poll_id', poll_id)
+  const responses = (responsesData ?? []) as unknown as ResponseRow[]
 
-  const { data: contacts } = await supabase
+  const { data: contactsData } = await supabase
     .from('contacts')
     .select('id, district, zip')
     .eq('campaign_id', poll.campaign_id)
+  const contacts = (contactsData ?? []) as unknown as ContactRow[]
 
-  const contactMap = new Map((contacts ?? []).map(c => [c.id, c]))
-  const questions = poll.questions as PollQuestion[]
-  const totalRespondents = [...new Set((responses ?? []).map(r => r.contact_id))].length
+  const contactMap = new Map(contacts.map(c => [c.id, c]))
+  const questions = poll.questions as unknown as PollQuestion[]
+  const totalRespondents = Array.from(new Set(responses.map(r => r.contact_id))).length
 
   const optionSummaries = questions.map(q => {
-    const qr = (responses ?? []).filter(r => r.question_id === q.id)
+    const qr = responses.filter(r => r.question_id === q.id)
     const counts: Record<string, number> = {}
     for (const r of qr) counts[r.answer] = (counts[r.answer] ?? 0) + 1
     return { question: q.text, counts, total: qr.length }
   })
 
   const districtBreakdown: Record<string, Record<string, Record<string, number>>> = {}
-  for (const r of (responses ?? [])) {
+  for (const r of responses) {
     const c = contactMap.get(r.contact_id)
     if (!c?.district) continue
-    districtBreakdown[c.district] = districtBreakdown[c.district] ?? {}
-    districtBreakdown[c.district][r.question_id] = districtBreakdown[c.district][r.question_id] ?? {}
+    districtBreakdown[c.district] ??= {}
+    districtBreakdown[c.district][r.question_id] ??= {}
     districtBreakdown[c.district][r.question_id][r.answer] =
       (districtBreakdown[c.district][r.question_id][r.answer] ?? 0) + 1
   }
@@ -92,10 +100,10 @@ Each section should be thorough and specific. Use data to support every claim. W
 
   const insights = message.content[0].type === 'text' ? message.content[0].text : ''
 
-  // Cache in ai_analysis
   await supabase
     .from('ai_analysis')
-    .upsert({ poll_id, insights }, { onConflict: 'poll_id' })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    .upsert({ poll_id, insights } as any, { onConflict: 'poll_id' })
 
   return NextResponse.json({ insights })
 }
